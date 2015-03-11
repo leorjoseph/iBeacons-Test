@@ -21,7 +21,10 @@
 #import "LMLogger.h"
 
 @interface CDVLocationManager() {
-    bool demoAlertDisplayed;
+    BOOL demoAlertDisplayed;
+    BOOL deviceEnteredRegion;
+    BOOL deviceExitRegion;
+    BOOL checkinAlertDisplayed;
     NSTimer* userDemoTimer;
     int secondsCount;
 }
@@ -47,8 +50,11 @@
 }
 
 - (void) initLocationManager {
-    self.locationManager = [[CLLocationManager alloc] init];
-    self.locationManager.delegate = self;
+    if (self.locationManager == nil) {
+        self.locationManager = [[CLLocationManager alloc] init];
+        self.locationManager.delegate = self;
+    }
+
 }
 
 - (void) initPeripheralManager {
@@ -116,6 +122,8 @@
 
 -(void)locationManager:(CLLocationManager *)manager didEnterRegion:(CLRegion *)region {
     
+    deviceEnteredRegion = YES;
+    deviceExitRegion = NO;
     [self localNotificationEnteringRegion];
 
     [self.queue addOperationWithBlock:^{
@@ -141,6 +149,8 @@
 
 -(void)locationManager:(CLLocationManager *)manager didExitRegion:(CLRegion *)region {
 
+    deviceEnteredRegion = NO;
+    deviceExitRegion = YES;
     [self localNotificationExitRegion];
 
     [self.queue addOperationWithBlock:^{
@@ -216,49 +226,64 @@
     CLBeacon *beacon = [[CLBeacon alloc] init];
     beacon = [beacons lastObject];
     
-    if (beacon.proximity == CLProximityNear) {
+    if (beacon !=nil) {
         
-        // Start the timer to check the user standing for 30 secs
-        NSLog(@"%d",secondsCount);
-        if (secondsCount==0 && !demoAlertDisplayed) {
-            if (userDemoTimer==nil)
-                userDemoTimer = [NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(secondsCount) userInfo:nil repeats:YES];
+        [self displayWelcomeAlert:beacon.proximity];
+
+        if (beacon.proximity == CLProximityNear) {
             
-            [userDemoTimer fire];
+            // Start the timer to check the user standing for 30 secs
+            NSLog(@"%d",secondsCount);
+            if (secondsCount==0 && !demoAlertDisplayed) {
+                if (userDemoTimer==nil)
+                    userDemoTimer = [NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(secondsCount) userInfo:nil repeats:YES];
+                
+                [userDemoTimer fire];
+            }
+            if (secondsCount >=30) {
+                demoAlertDisplayed = YES;
+                secondsCount = 0;
+                [self demoAlert];
+                [userDemoTimer invalidate];
+                userDemoTimer = nil;
+            }
+            
+        }else if(beacon.proximity == CLProximityImmediate){
+            if (!checkinAlertDisplayed) {
+                
+                checkinAlertDisplayed = YES;
+                
+                //Check-in via QR Code alert
+                [self displayCheckinAlert];
+            }
+
         }
-        if (secondsCount >=30) {
-            demoAlertDisplayed = YES;
+        if (beacon.proximity != CLProximityNear) {
             secondsCount = 0;
-            [self demoAlert];
             [userDemoTimer invalidate];
             userDemoTimer = nil;
+            NSLog(@"Timer Stopped");
         }
         
-    }
-    if (beacon.proximity != CLProximityNear) {
-        secondsCount = 0;
-        [userDemoTimer invalidate];
-        userDemoTimer = nil;
-        NSLog(@"Timer Stopped");
+        [self.queue addOperationWithBlock:^{
+            
+            [self _handleCallSafely:^CDVPluginResult *(CDVInvokedUrlCommand *command) {
+                
+                //[[self getLogger] debugLog:@"didRangeBeacons: %@", beacons];
+                
+                NSMutableDictionary* dict = [[NSMutableDictionary alloc]init];
+                [dict setObject:[self jsCallbackNameForSelector :_cmd] forKey:@"eventType"];
+                [dict setObject:[self mapOfRegion:region] forKey:@"region"];
+                [dict setObject:beaconsMapsArray forKey:@"beacons"];
+                
+                CDVPluginResult* pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:dict];
+                [pluginResult setKeepCallbackAsBool:YES];
+                return pluginResult;
+                
+            } :nil :NO :self.delegateCallbackId];
+        }];
     }
 
-    [self.queue addOperationWithBlock:^{
-        
-        [self _handleCallSafely:^CDVPluginResult *(CDVInvokedUrlCommand *command) {
-            
-            //[[self getLogger] debugLog:@"didRangeBeacons: %@", beacons];
-            
-            NSMutableDictionary* dict = [[NSMutableDictionary alloc]init];
-            [dict setObject:[self jsCallbackNameForSelector :_cmd] forKey:@"eventType"];
-            [dict setObject:[self mapOfRegion:region] forKey:@"region"];
-            [dict setObject:beaconsMapsArray forKey:@"beacons"];
-            
-            CDVPluginResult* pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:dict];
-            [pluginResult setKeepCallbackAsBool:YES];
-            return pluginResult;
-            
-        } :nil :NO :self.delegateCallbackId];
-    }];
 }
 
 
@@ -1086,12 +1111,8 @@
     
     return dict;
 }
-- (void) localNotificationExitRegion {
-    
-    UILocalNotification * notification = [[UILocalNotification alloc] init];
-    notification.alertBody = @"Thank you.";
-    [[UIApplication sharedApplication] presentLocalNotificationNow:notification];
-}
+
+#pragma mark - Custom Methods
 
 - (void) localNotificationEnteringRegion {
     
@@ -1101,18 +1122,42 @@
     [[UIApplication sharedApplication] presentLocalNotificationNow:notification];
 }
 
+- (void) localNotificationExitRegion {
+    
+    UILocalNotification * notification = [[UILocalNotification alloc] init];
+    notification.alertBody = @"Thank you.";
+    [[UIApplication sharedApplication] presentLocalNotificationNow:notification];
+}
+
+- (void) displayCheckinAlert{
+    
+    UIAlertView * av = [[UIAlertView alloc] initWithTitle:@"Information" message:@"Would you like to Check-in via QR Code ?" delegate:self cancelButtonTitle:@"Yes"
+                                        otherButtonTitles:@"No", nil];
+    av.tag = 101;
+    [av show];
+}
 - (void) demoAlert{
     
-    UIAlertView * av = [[UIAlertView alloc] initWithTitle:@"Information" message:@"Would like to see the demo" delegate:self cancelButtonTitle:@"Yes"
+    UIAlertView * av = [[UIAlertView alloc] initWithTitle:@"Information" message:@"Would like to see the demo ?" delegate:self cancelButtonTitle:@"Yes"
                                         otherButtonTitles:@"No", nil];
-    av.tag = 55;
+    av.tag = 102;
     [av show];
 }
 
 - (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex{
-    if (alertView.tag == 55) {
+    
+    if (alertView.tag == 101) {
+        if (buttonIndex == 0)
+            [super writeJavascript:@"checkinQR()"];
+        
+        //checkinAlertDisplayed = NO;
+    }
+    else if (alertView.tag == 102) {
+        if (buttonIndex == 0)
+            [super writeJavascript:@"demoAlertCallback()"];
+
         secondsCount =0;
-        demoAlertDisplayed = NO;
+        //demoAlertDisplayed = NO;
     }
 }
 
@@ -1121,6 +1166,22 @@
     secondsCount= secondsCount+1;
     NSLog(@"Timer in Seconds : %d",secondsCount);
 }
+
+- (void) displayWelcomeAlert:(CLProximity) proximity
+{
+    if (proximity != CLProximityUnknown) {
+        if (!deviceEnteredRegion){
+            deviceEnteredRegion = YES;
+            deviceExitRegion = NO;
+            [self localNotificationEnteringRegion];
+        }
+    }
+}
+
+- (void) customCallback {
+    [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsString:@"customCallback()"];
+}
+# pragma mark - CDV Methods
 
 - (LMLogger*) getLogger {
     
@@ -1153,6 +1214,11 @@
     };
     
     [[self getLogger] debugLog:@"Converted %@ into %@", fullName, shortName];
+    
+    if([shortName isEqualToString:@"didChangeAuthorizationStatus"])
+    {
+        //shortName = @"customCallback";
+    }
     return shortName;
 }
 
